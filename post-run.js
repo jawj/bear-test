@@ -1,7 +1,6 @@
 
-const
-  host = 'neon.tech',
-  port = 443;
+const [host, portStr] = location.search.slice(1).split(':');
+const port = parseInt(portStr, 10) || 443;
 
 function toFriendlyHex(binStrOrArr) {
   let s = '';
@@ -33,7 +32,6 @@ Module.onRuntimeInitialized = function () {
   const socket = new WS2S('ws://localhost:3613/').newSocket();
 
   const incomingDataQueue = [];
-
   let globalBuf = null;
   let globalMaxSize = 0;
   let globalResolve = null;
@@ -50,7 +48,6 @@ Module.onRuntimeInitialized = function () {
       incomingDataQueue.shift();
     }
 
-    console.log('setting buffer data');
     const len = nextData.length;
     for (let i = 0; i < len; i++) Module.setValue(globalBuf + i, nextData[i], 'i8');
 
@@ -58,12 +55,11 @@ Module.onRuntimeInitialized = function () {
     globalResolve = globalBuf = null;
     globalMaxSize = 0;
 
-    console.log('returning control');
     resolve(len);
   }
 
   Module.provideEncryptedFromNetwork = (buf, maxSize) => {
-    console.log(`providing up to ${maxSize} encrypted bytes from network`);
+    console.info(`Module.provideEncryptedFromNetwork / providing up to ${maxSize} bytes`);
 
     globalBuf = buf;
     globalMaxSize = maxSize;
@@ -73,14 +69,8 @@ Module.onRuntimeInitialized = function () {
     return promise;
   }
 
-  Module.receiveDecryptedFromLibrary = (buf, size) => {
-    console.log(`receiving ${size} decrypted bytes from library`);
-
-    console.log(buf);
-  }
-
   Module.writeEncryptedToNetwork = (buf, size) => {
-    console.log(`writing ${size} encrypted bytes to network`);
+    console.info(`Module.writeEncryptedToNetwork / writing ${size} bytes`);
 
     const arr = byteArrayFromPointer(buf, size);
     socket.sendb(arr);
@@ -101,31 +91,57 @@ Module.onRuntimeInitialized = function () {
     crypto.getRandomValues(entropy);
 
     let result = initTls(host, entropy, entropyLen);
-    console.log(result);
+    console.log('initTls result:', result);
 
     const getReq = `GET / HTTP/1.0\r\nHost: ${host}\r\n\r\n`;
     const len = getReq.length;
     const arr = new Uint8Array(len);
     for (let i = 0; i < len; i ++) arr[i] = getReq.charCodeAt(i);
     console.log(getReq);
-    result = await writeData(arr, len);
-    console.log('write result', result);
 
-    const size = 1024;
+    result = await writeData(arr, len);
+    console.log('write result:', result);
+
+    const size = 17000;
     const buf = Module._malloc(size);
+    let page = '';
     for (;;) {
       result = await readData(buf, size);
       if (result <= 0) break;
       let str = '';
       for (let i = 0; i < result; i ++) str += String.fromCharCode(getValue(buf + i, 'i8'));
-      console.log('decrypted', str);
+      console.log('>>', str);
+      page += str;
     }
+
+    document.body.style.margin = 0;
+    document.body.style.padding = 0;
+
+    const headersEnd = page.indexOf('\r\n\r\n');
+    
+    const headers = page.slice(0, headersEnd);
+    const pre = document.createElement('pre');
+    pre.innerText = headers;
+    pre.style.width = '100vw';
+    pre.style.height = '30vh';
+    pre.style.overflow = 'scroll'
+    document.body.appendChild(pre);
+
+    const html = page.slice(headersEnd);
+    const iframe = document.createElement('iframe');
+    iframe.srcdoc = html;
+    iframe.style.width = '100vw';
+    iframe.style.height = '65vh';
+    document.body.appendChild(iframe);
+
+    Module._free(buf);
+    console.log('finished');
   };
 
   // var receivedS = false;
 
   socket.onRecv = (data) => {
-    console.log(`raw data received (${data.length} bytes):`, toFriendlyHex(data));
+    console.info(`socket.onRecv / ${data.length} bytes received:`, toFriendlyHex(data));
 
     incomingDataQueue.push(data);
     dequeueIncomingData();
@@ -143,7 +159,7 @@ Module.onRuntimeInitialized = function () {
   }
 
   socket.onClose = () => {
-    console.log('[socket] disconnected');
+    console.info('socket.onClose / disconnected');
     if (globalResolve) globalResolve(0);
   }
 

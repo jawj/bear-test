@@ -1,10 +1,6 @@
-
 #include <emscripten.h>
-
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
 
 #include "bearssl.h"
 
@@ -13,102 +9,59 @@ br_x509_minimal_context xc;
 unsigned char iobuf[BR_SSL_BUFSIZE_BIDI];
 br_sslio_context ioc;
 int ret;
+int err;
+
+#define CHATTY
+
+// === JS functions exposed to C ===
 
 EM_ASYNC_JS(int, jsProvideEncryptedFromNetwork, (unsigned char *buf, size_t len), {
-  console.log('jsProvideEncryptedFromNetwork');
   const bytesRead = await Module.provideEncryptedFromNetwork(buf, len);
   return bytesRead;
 });
 
 EM_JS(int, jsWriteEncryptedToNetwork, (const unsigned char *buf, size_t len), {
-  console.log('jsWriteEncryptedToNetwork');
   const bytesWritten = Module.writeEncryptedToNetwork(buf, len);
   return bytesWritten;
 });
 
 EM_JS(int, jsReceiveDecryptedFromLibrary, (unsigned char *buf, size_t len), {
-  console.log('jsReceiveDecryptedFromLibrary');
   Module.jsReceiveDecryptedFromLibrary(buf, len);
 });
 
-int writeData(unsigned char *buf, size_t len) {  // ask BearSSL to encrypt and send (via JS callback) data
-  printf("writing %li bytes:", len);
-  for (int i = 0; i < len; i++) printf(" %02x", buf[i]);
-  puts("");
-  
-  ret = br_sslio_write_all(&ioc, buf, len);
-  if (ret != 0) {
-    puts("write error");
-    return ret;
-  }
 
-  ret = br_sslio_flush(&ioc);
-  if (ret != 0) {
-    puts("flush error");
-    return ret;
-  }
+// === I/O callbacks to/from WebSockets in JS ===
 
-  return 0;
-}
-
-int readData(unsigned char *buf, size_t len) {
-  ret = br_sslio_read(&ioc, buf, len);
-  return ret;
-}
-
-/*
- * Low-level data read callback for the simplified SSL I/O API.
- */
 static int sock_read(void *ctx, unsigned char *buf, size_t len) {
-  printf("%s", "recv:");
   int recvd = jsProvideEncryptedFromNetwork(buf, len);
-  for (int i = 0; i < len; i++) printf(" %02x", (unsigned char)buf[i]);
-  printf("\nreceived %d bytes from JS\n\n", recvd);
+
+  #ifdef CHATTY
+    printf("%s", "recv:");
+    for (int i = 0; i < len; i++) printf(" %02x", (unsigned char)buf[i]);
+    printf("\nreceived %d bytes from JS\n\n", recvd);
+  #endif
+
   return recvd;
-
-  // for (;;) {
-  // 	ssize_t rlen;
-
-  // 	rlen = read(*(int *)ctx, buf, len);
-  // 	if (rlen <= 0) {
-  // 		if (rlen < 0 && errno == EINTR) {
-  // 			continue;
-  // 		}
-  // 		return -1;
-  // 	}
-  // 	return (int)rlen;
-  // }
 }
 
-/*
- * Low-level data write callback for the simplified SSL I/O API.
- */
 static int sock_write(void *ctx, const unsigned char *buf, size_t len) {
-  printf("%s", "send:");
-  for (int i = 0; i < len; i++) printf(" %02x", (unsigned char)buf[i]);
+  #ifdef CHATTY
+    printf("%s", "send:");
+    for (int i = 0; i < len; i++) printf(" %02x", (unsigned char)buf[i]);
+  #endif
+
   int sent = jsWriteEncryptedToNetwork(buf, len);
-  printf("\nsent %d bytes to JS\n\n", sent);
+
+  #ifdef CHATTY
+    printf("\nsent %d bytes to JS\n\n", sent);
+  #endif
+
   return sent;
-
-  // for (;;) {
-  // 	ssize_t wlen;
-
-  // 	wlen = write(*(int *)ctx, buf, len);
-  // 	if (wlen <= 0) {
-  // 		if (wlen < 0 && errno == EINTR) {
-  // 			continue;
-  // 		}
-  // 		return -1;
-  // 	}
-  // 	return (int)wlen;
-  // }
 }
 
+// === CA cert(s) ===
+
 /*
- * The hardcoded trust anchors. These are the two DN + public key that
- * correspond to the self-signed certificates cert-root-rsa.pem and
- * cert-root-ec.pem.
- *
  * C code for hardcoded trust anchors can be generated with the "brssl"
  * command-line tool (with the "ta" command).
  */
@@ -189,94 +142,60 @@ static const br_x509_trust_anchor TAs[1] = {
 
 #define TAs_NUM   1
 
+// === TLS functions exposed to JavaScript ===
 
 int initTls(char *host, char *entropy, size_t entropyLen) {
   br_ssl_client_init_full(&sc, &xc, TAs, TAs_NUM);
-  br_ssl_engine_set_versions(&sc.eng, BR_TLS12, BR_TLS12);
-  br_ssl_engine_inject_entropy(&sc.eng, entropy, entropyLen);
+  br_ssl_engine_set_versions(&sc.eng, BR_TLS12, BR_TLS12);  // TLS 1.2 only, please
+  br_ssl_engine_inject_entropy(&sc.eng, entropy, entropyLen);  // required with emscripten
   br_ssl_engine_set_buffer(&sc.eng, iobuf, sizeof iobuf, 1);
 
   ret = br_ssl_client_reset(&sc, host, 0);
   if (ret != 1) {
-    int err = br_ssl_engine_last_error(&sc.eng);
+    err = br_ssl_engine_last_error(&sc.eng);
     printf("client reset failed with error %i\n", err);
     return -1;
   }
 
   br_sslio_init(&ioc, &sc.eng, sock_read, NULL, sock_write, NULL);
   return 0;
+}
 
-  /*
-   * Note that while the context has, at that point, already
-   * assembled the ClientHello to send, nothing happened on the
-   * network yet. Real I/O will occur only with the next call.
-   *
-   * We write our simple HTTP request. We could test each call
-   * for an error (-1), but this is not strictly necessary, since
-   * the error state "sticks": if the context fails for any reason
-   * (e.g. bad server certificate), then it will remain in failed
-   * state and all subsequent calls will return -1 as well.
-   */
-  // br_sslio_write_all(&ioc, "GET ", 4);
-  // br_sslio_write_all(&ioc, path, strlen(path));
-  // br_sslio_write_all(&ioc, " HTTP/1.0\r\nHost: ", 17);
-  // br_sslio_write_all(&ioc, host, strlen(host));
-  // br_sslio_write_all(&ioc, "\r\n\r\n", 4);
+int writeData(unsigned char *buf, size_t len) {  // ask BearSSL to encrypt and send (via JS callback) data
+  #ifdef CHATTY
+    printf("writing %li unencrypted bytes:", len);
+    for (int i = 0; i < len; i++) printf(" %02x", buf[i]);
+    puts("");
+  #endif
+  
+  ret = br_sslio_write_all(&ioc, buf, len);
+  if (ret != 0) {
+    err = br_ssl_engine_last_error(&sc.eng);
+    printf("write failed with error %i\n", err);
+    return ret;
+  }
 
-  /*
-   * SSL is a buffered protocol: we make sure that all our request
-   * bytes are sent onto the wire.
-   */
-  // br_sslio_flush(&ioc);
+  ret = br_sslio_flush(&ioc);
+  if (ret != 0) {
+    err = br_ssl_engine_last_error(&sc.eng);
+    printf("flush failed with error %i\n", err);
+    return ret;
+  }
 
-  /*
-   * Read the server's response. We use here a small 512-byte buffer,
-   * but most of the buffering occurs in the client context: the
-   * server will send full records (up to 16384 bytes worth of data
-   * each), and the client context buffers one full record at a time.
-   */
-  // for (;;) {
-  // 	int rlen;
-  // 	unsigned char tmp[512];
+  return 0;
+}
 
-  // 	rlen = br_sslio_read(&ioc, tmp, sizeof tmp);
-  // 	if (rlen < 0) {
-  // 		break;
-  // 	}
-  // 	fwrite(tmp, 1, rlen, stdout);
-  // }
+int readData(unsigned char *buf, size_t len) {
+  ret = br_sslio_read(&ioc, buf, len);
+  if (ret != 0) {
+    err = br_ssl_engine_last_error(&sc.eng);
+    printf("read failed with error %i\n", err);
+    return ret;
+  }
 
-  /*
-   * Close the socket.
-   */
-  // close(fd);
+  #ifdef CHATTY
+    printf("read %i unencrypted bytes\n", ret);
+  #endif
 
-  /*
-   * Check whether we closed properly or not. If the engine is
-   * closed, then its error status allows to distinguish between
-   * a normal closure and a SSL error.
-   *
-   * If the engine is NOT closed, then this means that the
-   * underlying network socket was closed or failed in some way.
-   * Note that many Web servers out there do not properly close
-   * their SSL connections (they don't send a close_notify alert),
-   * which will be reported here as "socket closed without proper
-   * SSL termination".
-   */
-  // if (br_ssl_engine_current_state(&sc.eng) == BR_SSL_CLOSED) {
-  // 	int err;
-
-  // 	err = br_ssl_engine_last_error(&sc.eng);
-  // 	if (err == 0) {
-  // 		fprintf(stderr, "closed.\n");
-  // 		return EXIT_SUCCESS;
-  // 	} else {
-  // 		fprintf(stderr, "SSL error %d\n", err);
-  // 		return EXIT_FAILURE;
-  // 	}
-  // } else {
-  // 	fprintf(stderr,
-  // 		"socket closed without proper SSL termination\n");
-  // 	return EXIT_FAILURE;
-  // }
+  return ret;
 }

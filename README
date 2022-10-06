@@ -5,6 +5,10 @@ emcc jstlsclient.c $(find ../BearSSL/src -name \*.c) \
   -I../BearSSL/inc -I../BearSSL/src \
   -o bearssl.js \
   -sEXPORTED_FUNCTIONS=_initTls,_writeData,_readData \
-  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,getValue,setValue,allocateUTF8 \
+  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,getValue,setValue \
   -sASYNCIFY \
   --post-js post-run.js # -O3  # uncomment O3 for production
+
+# for error codes, see
+# https://bearssl.org/apidoc/bearssl__ssl_8h.html
+# https://bearssl.org/apidoc/bearssl__x509_8h.html
