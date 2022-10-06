@@ -1,0 +1,10 @@
+
+## jstlsclient.c compiles to a simple library for TLS within JavaScript
+
+emcc jstlsclient.c $(find ../BearSSL/src -name \*.c) \
+  -I../BearSSL/inc -I../BearSSL/src \
+  -o bearssl.js \
+  -sEXPORTED_FUNCTIONS=_initTls,_writeData,_readData \
+  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,getValue,setValue,allocateUTF8 \
+  -sASYNCIFY \
+  --post-js post-run.js # -O3  # uncomment O3 for production
