@@ -18,6 +18,10 @@ function toFriendlyHex(binStrOrArr) {
   return s;
 }
 
+function arrFromFriendlyHex(hex) {
+  return hex.split(' ').map(pair => parseInt(pair, 16));
+}
+
 function byteArrayFromPointer(buff, size) {
   const arr = new Uint8Array(size);
   for (let i = 0; i < size; i++) arr[i] = Module.getValue(buff + i, 'i8');
@@ -82,80 +86,31 @@ Module.onRuntimeInitialized = function () {
   }
 
   socket.onOpen = async () => {
-    // console.log('[socket] connected: sending pg probe value');
-    // var pgMagic = arrFromFriendlyHex('00 00 00 08 04 D2 16 2F');
-    // socket.sendb(pgMagic);
-
-    const entropyLen = 256;
-    const entropy = new Uint8Array(entropyLen);
-    crypto.getRandomValues(entropy);
-
-    let result = initTls(host, entropy, entropyLen);
-    console.log('initTls result:', result);
-
-    const getReq = `GET / HTTP/1.0\r\nHost: ${host}\r\n\r\n`;
-    const len = getReq.length;
-    const arr = new Uint8Array(len);
-    for (let i = 0; i < len; i ++) arr[i] = getReq.charCodeAt(i);
-    console.log(getReq);
-
-    result = await writeData(arr, len);
-    console.log('write result:', result);
-
-    const size = 17000;
-    const buf = Module._malloc(size);
-    let page = '';
-    for (;;) {
-      result = await readData(buf, size);
-      if (result <= 0) break;
-      let str = '';
-      for (let i = 0; i < result; i ++) str += String.fromCharCode(getValue(buf + i, 'i8'));
-      console.log('>>', str);
-      page += str;
-    }
-
-    document.body.style.margin = 0;
-    document.body.style.padding = 0;
-
-    const headersEnd = page.indexOf('\r\n\r\n');
-    
-    const headers = page.slice(0, headersEnd);
-    const pre = document.createElement('pre');
-    pre.innerText = headers;
-    pre.style.width = '100vw';
-    pre.style.height = '30vh';
-    pre.style.overflow = 'scroll'
-    document.body.appendChild(pre);
-
-    const html = page.slice(headersEnd);
-    const iframe = document.createElement('iframe');
-    iframe.srcdoc = html;
-    iframe.style.width = '100vw';
-    iframe.style.height = '65vh';
-    document.body.appendChild(iframe);
-
-    Module._free(buf);
-    console.log('finished');
+    console.log('connected: sending pg probe value');
+    var pgMagic = arrFromFriendlyHex('00 00 00 08 04 D2 16 2F');
+    socket.sendb(pgMagic);
   };
 
-  // var receivedS = false;
+  var receivedS = false;
 
-  socket.onRecv = (data) => {
-    console.info(`socket.onRecv / ${data.length} bytes received:`, toFriendlyHex(data));
+  socket.onRecv = async (data) => {
+    if (receivedS === false && data[0] === 'S'.charCodeAt(0)) {
+      receivedS = true;
+      console.info(`socket.onRecv / ${data.length} bytes received:`, toFriendlyHex(data));
 
-    incomingDataQueue.push(data);
-    dequeueIncomingData();
+      const entropyLen = 256;
+      const entropy = new Uint8Array(entropyLen);
+      crypto.getRandomValues(entropy);
 
-    // var binStr = binStrFromArr(data);
-    // if (receivedS === false && binStr === 'S') {
-    //   receivedS = true;
-    //   client.handshake();
-    //   //socket.sendb(arrFromFriendlyHex('16 03 01 00 6a 01 00 00 66 03 03 7a 88 bd db 11 34 5e 2a d4 25 01 fa 9d e5 52 56 2c c8 d0 e1 23 0f cc 4b fb a5 a0 c8 a2 72 b6 2c 00 00 04 00 3d 00 3c 01 00 00 39 00 00 00 2b 00 29 00 00 26 70 61 74 69 65 6e 74 2d 74 68 75 6e 64 65 72 2d 31 38 37 34 33 35 2e 63 6c 6f 75 64 2e 6e 65 6f 6e 2e 74 65 63 68 00 0d 00 06 00 04 04 01 02 01'));
-    //   //socket.sendb(arrFromFriendlyHex('16 03 01 00 ec 01 00 00 e8 03 03 76 01 f0 fe fd 88 2e 0b 44 39 f6 2e fe d5 28 3d be 40 1d 6d 0a de e6 26 d7 31 4c ca 78 19 67 d3 00 00 38 c0 2c c0 30 00 9f cc a9 cc a8 cc aa c0 2b c0 2f 00 9e c0 24 c0 28 00 6b c0 23 c0 27 00 67 c0 0a c0 14 00 39 c0 09 c0 13 00 33 00 9d 00 9c 00 3d 00 3c 00 35 00 2f 00 ff 01 00 00 87 00 00 00 2b 00 29 00 00 26 70 61 74 69 65 6e 74 2d 74 68 75 6e 64 65 72 2d 31 38 37 34 33 35 2e 63 6c 6f 75 64 2e 6e 65 6f 6e 2e 74 65 63 68 00 0b 00 04 03 00 01 02 00 0a 00 0c 00 0a 00 1d 00 17 00 1e 00 19 00 18 00 23 00 00 00 16 00 00 00 17 00 00 00 0d 00 30 00 2e 04 03 05 03 06 03 08 07 08 08 08 09 08 0a 08 0b 08 04 08 05 08 06 04 01 05 01 06 01 03 03 02 03 03 01 02 01 03 02 02 02 04 02 05 02 06 02'));
+      let result = initTls(host, entropy, entropyLen);
+      console.log('initTls result:', result);
 
-    // } else {
-    //   client.process(binStr);
-    // }
+      await writeData(new Uint8Array([0, 3, 0, 0, 0, 0, 0, 0]), 8); // version 3, zero length
+
+    } else {
+      incomingDataQueue.push(data);
+      dequeueIncomingData();
+    }
   }
 
   socket.onClose = () => {
