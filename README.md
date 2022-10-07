@@ -1,9 +1,11 @@
 
-This proof-of-concept project uses BearSSL to tunnel TLS over WebSockets from browsers and other JS engines without TCP sockets. It currently supports Let's Encrypt certifcates only, since it embeds only the [ISRG Root X1 trust root](https://letsencrypt.org/certs/isrgrootx1.pem).
+This proof-of-concept project uses BearSSL to tunnel TLS 1.2 over WebSockets from browsers (and, soon, other JS engines without TCP sockets). It currently supports Let's Encrypt certificates only, since it embeds only the [ISRG Root X1 trust root](https://letsencrypt.org/certs/isrgrootx1.pem).
+
+Note that there is plenty of low-hanging tidying and optimising still to be done (e.g. we're calling `setValue` and `getValue` in loops rather thsn moving memory around in bigger chunks).
 
 ## Dependencies
 
-You need to be running the `ws2s` server to provide the tunnelling:
+You need emscripten. You also need to be running the `ws2s` server to provide the tunnelling:
 
 ```
 python3 -m venv ws2s
@@ -15,11 +17,13 @@ ws2sd run
 
 If you need to change any settings, such as the WebSocket port, these are in `~/.ws2s/config.json`.
 
+Note: other tunneling libraries are available, but have not been evaluated.
+
 ## Build
 
 In a directory adjacent to this one, get the BearSSL source tree: `git clone https://www.bearssl.org/git/BearSSL`.
 
-Then, in this directory:
+Then, back in this directory:
 
 ```bash
 emcc jstlsclient.c $(find ../BearSSL/src -name \*.c) \
