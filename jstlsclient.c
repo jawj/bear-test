@@ -147,6 +147,17 @@ static const br_x509_trust_anchor TAs[1] = {
 int initTls(char *host, char *entropy, size_t entropyLen) {
   br_ssl_client_init_full(&sc, &xc, TAs, TAs_NUM);
   br_ssl_engine_set_versions(&sc.eng, BR_TLS12, BR_TLS12);  // TLS 1.2 only, please
+
+  static const uint16_t suites[] = {  // matched to rustls: https://docs.rs/rustls/latest/src/rustls/suites.rs.html#125-143
+    BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+    BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+    BR_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+    BR_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+    BR_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+    BR_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+  };
+  br_ssl_engine_set_suites(&sc.eng, suites, (sizeof suites) / (sizeof suites[0]));  
+
   br_ssl_engine_inject_entropy(&sc.eng, entropy, entropyLen);  // required with emscripten
   br_ssl_engine_set_buffer(&sc.eng, iobuf, sizeof iobuf, 1);
 
