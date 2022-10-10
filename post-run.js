@@ -26,7 +26,7 @@ function byteArrayFromPointer(buff, size) {
 
 Module.onRuntimeInitialized = function () {
   const initTls = Module.cwrap('initTls', 'number', ['string', 'array', 'number']);  // host, entropy, entropy length
-  const writeData = Module.cwrap('writeData', 'number', ['array', 'number'], { async: true });  // data (array), legnth
+  const writeData = Module.cwrap('writeData', 'number', ['array', 'number'], { async: true });  // data (array), length
   const readData = Module.cwrap('readData', 'number', ['number', 'number'], { async: true });  // buffer (pointer), length
 
   const socket = new WS2S('ws://localhost:3613/').newSocket();

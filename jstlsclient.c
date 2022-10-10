@@ -162,7 +162,7 @@ int initTls(char *host, char *entropy, size_t entropyLen) {
   br_ssl_engine_set_buffer(&sc.eng, iobuf, sizeof iobuf, 1);
 
   ret = br_ssl_client_reset(&sc, host, 0);
-  if (ret != 1) {
+  if (ret != 1) {  // errors can occur here, e.g. no entropy available
     err = br_ssl_engine_last_error(&sc.eng);
     printf("client reset failed with error %i\n", err);
     return -1;
