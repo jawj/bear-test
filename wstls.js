@@ -23,9 +23,6 @@ export default (async function (host, port) {
         emMaxSize = 0;
         resolve(nextData.length);
     }
-    function toFriendlyHex(arr) {
-        return arr.reduce((memo, x) => memo + (x < 16 ? ' 0' : ' ') + x.toString(16), '');
-    }
     module = await bearssl_emscripten({
         provideEncryptedFromNetwork(buf, maxSize) {
             console.info(`provideEncryptedFromNetwork: providing up to ${maxSize} bytes`);
@@ -41,6 +38,7 @@ export default (async function (host, port) {
             socket.sendb(arr);
             return size;
         },
+        /* for Cloudflare workers we'd use something like: */
         // instantiateWasm(info, receive) {
         //     let instance = new WebAssembly.Instance(wasm, info)
         //     receive(instance)
@@ -58,7 +56,7 @@ export default (async function (host, port) {
             resolve();
         };
         socket.onRecv = (data) => {
-            console.info(`socket: ${data.length} bytes received:${toFriendlyHex(data.subarray(0, 16))}${data.length > 16 ? ' …' : ''}`);
+            console.info(`socket: ${data.length} bytes received`);
             incomingDataQueue.push(data);
             dequeueIncomingData();
         };
@@ -68,19 +66,26 @@ export default (async function (host, port) {
                 emResolve(0);
         };
     });
-    const initTls = module.cwrap('initTls', 'number', ['string', 'array', 'number']); // host, entropy, entropy length
+    const wasm = {
+        initTls: module.cwrap('initTls', 'number', ['string', 'array', 'number']),
+        writeData: module.cwrap('writeData', 'number', ['array', 'number'], { async: true }),
+        readData: module.cwrap('readData', 'number', ['number', 'number'], { async: true }),
+    };
     return {
         startTls() {
             const entropyLen = 128;
             const entropy = new Uint8Array(entropyLen);
             crypto.getRandomValues(entropy);
-            initTls(host, entropy, entropyLen);
+            return wasm.initTls(host, entropy, entropyLen);
         },
-        writeData: module.cwrap('writeData', 'number', ['array', 'number'], { async: true }),
-        readData: module.cwrap('readData', 'number', ['number', 'number'], { async: true }),
-        malloc: module._malloc,
-        free: module._free,
-        getValue: module.getValue,
-        setValue: module.setValue,
+        async writeData(data) {
+            const status = await wasm.writeData(data, data.length);
+            return status;
+        },
+        async readData(maxBytes = 16709) {
+            const buf = module._malloc(maxBytes);
+            const bytesRead = await wasm.readData(buf, maxBytes);
+            return bytesRead <= 0 ? null : module.HEAPU8.slice(buf, buf + bytesRead);
+        },
     };
 });

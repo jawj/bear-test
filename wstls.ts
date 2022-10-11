@@ -35,10 +35,6 @@ export default (async function (host, port) {
         resolve(nextData.length);
     }
 
-    function toFriendlyHex(arr) {
-        return arr.reduce((memo, x) => memo + (x < 16 ? ' 0' : ' ') + x.toString(16), '');
-    }
-
     module = await bearssl_emscripten({
         provideEncryptedFromNetwork(buf, maxSize) {
             console.info(`provideEncryptedFromNetwork: providing up to ${maxSize} bytes`);
@@ -80,7 +76,7 @@ export default (async function (host, port) {
             resolve();
         }
         socket.onRecv = (data) => {
-            console.info(`socket: ${data.length} bytes received:${toFriendlyHex(data.subarray(0, 16))}${data.length > 16 ? ' …' : ''}`);
+            console.info(`socket: ${data.length} bytes received`);
             incomingDataQueue.push(data);
             dequeueIncomingData();
         }
@@ -90,20 +86,27 @@ export default (async function (host, port) {
         }
     });
 
-    const initTls = module.cwrap('initTls', 'number', ['string', 'array', 'number']);  // host, entropy, entropy length
+    const wasm = {
+        initTls: module.cwrap('initTls', 'number', ['string', 'array', 'number']),  // host, entropy, entropy length
+        writeData: module.cwrap('writeData', 'number', ['array', 'number'], { async: true }) as (data: Uint8Array, length: number) => Promise<number>,
+        readData: module.cwrap('readData', 'number', ['number', 'number'], { async: true }) as (pointer: number, length: number) => Promise<number>,
+    };
 
     return {
         startTls() {
             const entropyLen = 128;
             const entropy = new Uint8Array(entropyLen);
             crypto.getRandomValues(entropy);
-            initTls(host, entropy, entropyLen);
+            return wasm.initTls(host, entropy, entropyLen) as number;
         },
-        writeData: module.cwrap('writeData', 'number', ['array', 'number'], { async: true }) as (data: Uint8Array, length: number) => Promise<number>,
-        readData: module.cwrap('readData', 'number', ['number', 'number'], { async: true }) as (pointer: number, length: number) => Promise<number>,
-        malloc: module._malloc as (bytes: number) => number,
-        free: module._free as () => void,
-        getValue: module.getValue as (pointer: number, type: string) => number,
-        setValue: module.setValue as (pointer: number, value: number, type: string) => number,
+        async writeData(data: Uint8Array) {
+            const status = await wasm.writeData(data, data.length);
+            return status;
+        },
+        async readData(maxBytes = 16709) {  // BR_SSL_BUFSIZE_INPUT in bearssl_ssl.h
+            const buf = module._malloc(maxBytes);
+            const bytesRead = await wasm.readData(buf, maxBytes);
+            return bytesRead <= 0 ? null : module.HEAPU8.slice(buf, buf + bytesRead) as Uint8Array;
+        },
     };
 });
