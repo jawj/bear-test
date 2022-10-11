@@ -35,7 +35,7 @@ export default (async function (host, port) {
         writeEncryptedToNetwork(buf, size) {
             console.info(`writeEncryptedToNetwork: writing ${size} bytes`);
             const arr = module.HEAPU8.subarray(buf, buf + size);
-            socket.sendb(arr);
+            socket.send(arr);
             return size;
         },
         /* for Cloudflare workers we'd use something like: */
@@ -45,26 +45,26 @@ export default (async function (host, port) {
         //     return instance.exports
         // },
     });
-    await new Promise(resolve => {
-        socket = new WS2S('ws://localhost:3613/').newSocket();
-        socket.onReady = () => {
-            console.info('socket: ready');
-            socket.connect(host, port);
-        };
-        socket.onOpen = () => {
-            console.info('socket: connected');
+    await new Promise((resolve, reject) => {
+        socket = new WebSocket(`ws://localhost:9090/?name=${host}:${port}`);
+        socket.binaryType = 'arraybuffer';
+        socket.addEventListener('open', () => {
             resolve();
-        };
-        socket.onRecv = (data) => {
-            console.info(`socket: ${data.length} bytes received`);
-            incomingDataQueue.push(data);
-            dequeueIncomingData();
-        };
-        socket.onClose = () => {
+        });
+        socket.addEventListener('error', err => {
+            reject(err);
+        });
+        socket.addEventListener('close', () => {
             console.info('socket: disconnected');
             if (emResolve)
                 emResolve(0);
-        };
+        });
+        socket.addEventListener('message', (msg) => {
+            const data = new Uint8Array(msg.data);
+            console.info(`socket: ${data.length} bytes received`);
+            incomingDataQueue.push(data);
+            dequeueIncomingData();
+        });
     });
     const wasm = {
         initTls: module.cwrap('initTls', 'number', ['string', 'array', 'number']),

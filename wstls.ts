@@ -31,7 +31,7 @@ export default (async function (host, port) {
         const resolve = emResolve;
         emResolve = emBuf = null;
         emMaxSize = 0;
-        
+
         resolve(nextData.length);
     }
 
@@ -50,13 +50,13 @@ export default (async function (host, port) {
             console.info(`writeEncryptedToNetwork: writing ${size} bytes`);
 
             const arr = module.HEAPU8.subarray(buf, buf + size);
-            socket.sendb(arr);
+            socket.send(arr);
 
             return size;
         },
 
         /* for Cloudflare workers we'd use something like: */
-        
+
         // instantiateWasm(info, receive) {
         //     let instance = new WebAssembly.Instance(wasm, info)
         //     receive(instance)
@@ -65,25 +65,25 @@ export default (async function (host, port) {
 
     });
 
-    await new Promise<void>(resolve => {
-        socket = new WS2S('ws://localhost:3613/').newSocket();
-        socket.onReady = () => {
-            console.info('socket: ready');
-            socket.connect(host, port);
-        }
-        socket.onOpen = () => {
-            console.info('socket: connected');
+    await new Promise<void>((resolve, reject) => {
+        socket = new WebSocket(`ws://localhost:9090/?name=${host}:${port}`);
+        socket.binaryType = 'arraybuffer';
+        socket.addEventListener('open', () => {
             resolve();
-        }
-        socket.onRecv = (data) => {
+        });
+        socket.addEventListener('error', err => {
+            reject(err);
+        });
+        socket.addEventListener('close', () => {
+            console.info('socket: disconnected');
+            if (emResolve) emResolve(0);
+        });
+        socket.addEventListener('message', (msg: any) => {
+            const data = new Uint8Array(msg.data);
             console.info(`socket: ${data.length} bytes received`);
             incomingDataQueue.push(data);
             dequeueIncomingData();
-        }
-        socket.onClose = () => {
-            console.info('socket: disconnected');
-            if (emResolve) emResolve(0);
-        }
+        });
     });
 
     const wasm = {
