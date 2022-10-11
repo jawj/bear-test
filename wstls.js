@@ -84,8 +84,15 @@ export default (async function (host, port) {
         },
         async readData(maxBytes = 16709) {
             const buf = module._malloc(maxBytes);
-            const bytesRead = await wasm.readData(buf, maxBytes);
-            return bytesRead <= 0 ? null : module.HEAPU8.slice(buf, buf + bytesRead);
+            try {
+                const bytesRead = await wasm.readData(buf, maxBytes);
+                if (bytesRead <= 0)
+                    return null;
+                return module.HEAPU8.slice(buf, buf + bytesRead);
+            }
+            finally {
+                module._free(buf);
+            }
         },
     };
 });
