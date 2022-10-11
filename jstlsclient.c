@@ -11,7 +11,6 @@ br_sslio_context ioc;
 int ret;
 int err;
 
-#define CHATTY
 
 // === JS functions exposed to C ===
 
@@ -34,28 +33,11 @@ EM_JS(int, jsReceiveDecryptedFromLibrary, (unsigned char *buf, size_t len), {
 
 static int sock_read(void *ctx, unsigned char *buf, size_t len) {
   int recvd = jsProvideEncryptedFromNetwork(buf, len);
-
-  #ifdef CHATTY
-    printf("%s", "recv:");
-    for (int i = 0; i < len; i++) printf(" %02x", (unsigned char)buf[i]);
-    printf("\nreceived %d bytes from JS\n\n", recvd);
-  #endif
-
   return recvd;
 }
 
 static int sock_write(void *ctx, const unsigned char *buf, size_t len) {
-  #ifdef CHATTY
-    printf("%s", "send:");
-    for (int i = 0; i < len; i++) printf(" %02x", (unsigned char)buf[i]);
-  #endif
-
   int sent = jsWriteEncryptedToNetwork(buf, len);
-
-  #ifdef CHATTY
-    printf("\nsent %d bytes to JS\n\n", sent);
-  #endif
-
   return sent;
 }
 
@@ -173,12 +155,6 @@ int initTls(char *host, char *entropy, size_t entropyLen) {
 }
 
 int writeData(unsigned char *buf, size_t len) {  // ask BearSSL to encrypt and send (via JS callback) data
-  #ifdef CHATTY
-    printf("writing %li unencrypted bytes:", len);
-    for (int i = 0; i < len; i++) printf(" %02x", buf[i]);
-    puts("");
-  #endif
-  
   ret = br_sslio_write_all(&ioc, buf, len);
   if (ret != 0) {
     err = br_ssl_engine_last_error(&sc.eng);
@@ -198,15 +174,9 @@ int writeData(unsigned char *buf, size_t len) {  // ask BearSSL to encrypt and s
 
 int readData(unsigned char *buf, size_t len) {
   ret = br_sslio_read(&ioc, buf, len);
-  if (ret != 0) {
+  if (ret == -1) {
     err = br_ssl_engine_last_error(&sc.eng);
     printf("read failed with error %i\n", err);
-    return ret;
   }
-
-  #ifdef CHATTY
-    printf("read %i unencrypted bytes\n", ret);
-  #endif
-
   return ret;
 }

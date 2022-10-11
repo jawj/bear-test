@@ -10,8 +10,8 @@ You need emscripten.
 You also need to be running the `ws2s` server to provide the tunnelling, like so:
 
 ```
-python3 -m venv ws2s
-cd ws2s
+python3 -m venv ws2s-env
+cd ws2s-env
 source bin/activate
 pip install ws2s-python --upgrade
 ws2sd run
@@ -33,8 +33,13 @@ emcc jstlsclient.c $(find ../BearSSL/src -name \*.c) \
   -o bearssl.js \
   -sEXPORTED_FUNCTIONS=_initTls,_writeData,_readData \
   -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,getValue,setValue \
-  -sASYNCIFY \
-  --post-js post-run.js
+  -sASYNCIFY=1 -sDYNAMIC_EXECUTION=0 -sALLOW_MEMORY_GROWTH=1 \
+  -sMODULARIZE=1 -sEXPORT_NAME=bearssl_emscripten
+
+mv bearssl.js bearssl.unexported.js 
+echo -n "export" | cat - bearssl.unexported.js > bearssl.js
+
+npx tsc --target es2022 --lib es2022,dom --module es2022 wstls.ts index.ts
 ```
 
 For production, we'll want to add `-O3` to the `emcc` command above.

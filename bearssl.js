@@ -1,3 +1,11 @@
+export
+var bearssl_emscripten = (() => {
+  var _scriptDir = typeof document !== 'undefined' && document.currentScript ? document.currentScript.src : undefined;
+  if (typeof __filename !== 'undefined') _scriptDir = _scriptDir || __filename;
+  return (
+function(bearssl_emscripten) {
+  bearssl_emscripten = bearssl_emscripten || {};
+
 
 
 // The Module object: Our interface to the outside world. We import
@@ -13,15 +21,30 @@
 // after the generated code, you will need to define   var Module = {};
 // before the code. Then that object will be used in the code, and you
 // can continue to use Module afterwards as well.
-var Module = typeof Module != 'undefined' ? Module : {};
+var Module = typeof bearssl_emscripten != 'undefined' ? bearssl_emscripten : {};
 
 // See https://caniuse.com/mdn-javascript_builtins_object_assign
 
 // See https://caniuse.com/mdn-javascript_builtins_bigint64array
 
+// Set up the promise that indicates the Module is initialized
+var readyPromiseResolve, readyPromiseReject;
+Module['ready'] = new Promise(function(resolve, reject) {
+  readyPromiseResolve = resolve;
+  readyPromiseReject = reject;
+});
+["_initTls","_writeData","_readData","_fflush","onRuntimeInitialized"].forEach((prop) => {
+  if (!Object.getOwnPropertyDescriptor(Module['ready'], prop)) {
+    Object.defineProperty(Module['ready'], prop, {
+      get: () => abort('You are getting ' + prop + ' on the Promise object, instead of the instance. Use .then() to get called back with the instance, see the MODULARIZE docs in src/settings.js'),
+      set: () => abort('You are setting ' + prop + ' on the Promise object, instead of the instance. Use .then() to get called back with the instance, see the MODULARIZE docs in src/settings.js'),
+    });
+  }
+});
+
 // --pre-jses are emitted after the Module integration code, so that they can
 // refer to Module (if they choose; they can also define Module)
-
+// {{PRE_JSES}}
 
 // Sometimes an existing Module object exists with properties
 // meant to overwrite the default module functionality. Here
@@ -137,9 +160,7 @@ readAsync = (filename, onload, onerror) => {
 
   arguments_ = process['argv'].slice(2);
 
-  if (typeof module != 'undefined') {
-    module['exports'] = Module;
-  }
+  // MODULARIZE will export the module in the proper place outside, we don't need to export here
 
   process['on']('uncaughtException', function(ex) {
     // suppress ExitStatus exceptions from showing an error
@@ -221,6 +242,11 @@ if (ENVIRONMENT_IS_WEB || ENVIRONMENT_IS_WORKER) {
     scriptDirectory = self.location.href;
   } else if (typeof document != 'undefined' && document.currentScript) { // web
     scriptDirectory = document.currentScript.src;
+  }
+  // When MODULARIZE, this JS may be executed later, after document.currentScript
+  // is gone, so we saved it, and we use it here instead of any other info.
+  if (_scriptDir) {
+    scriptDirectory = _scriptDir;
   }
   // blob urls look like blob:http://site.com/etc/etc and we cannot infer anything from them.
   // otherwise, slice off the final part of the url to find the script directory.
@@ -924,6 +950,7 @@ function abort(what) {
   /** @suppress {checkTypes} */
   var e = new WebAssembly.RuntimeError(what);
 
+  readyPromiseReject(e);
   // Throw the error whether or not MODULARIZE is set because abort is used
   // in code paths apart from instantiation where an exception is expected
   // to be thrown when abort is called.
@@ -1161,11 +1188,13 @@ function createWasm() {
       return exports;
     } catch(e) {
       err('Module.instantiateWasm callback failed with error: ' + e);
-        return false;
+        // If instantiation fails, reject the module ready promise.
+        readyPromiseReject(e);
     }
   }
 
-  instantiateAsync();
+  // If instantiation fails, reject the module ready promise.
+  instantiateAsync().catch(readyPromiseReject);
   return {}; // no exports yet; we'll fill them in later
 }
 
@@ -1321,16 +1350,77 @@ function jsReceiveDecryptedFromLibrary(buf,len) { Module.jsReceiveDecryptedFromL
     }
 
   function getHeapMax() {
-      return HEAPU8.length;
+      // Stay one Wasm page short of 4GB: while e.g. Chrome is able to allocate
+      // full 4GB Wasm memories, the size will wrap back to 0 bytes in Wasm side
+      // for any code that deals with heap sizes, which would require special
+      // casing all heap size related code to treat 0 specially.
+      return 2147483648;
     }
   
-  function abortOnCannotGrowMemory(requestedSize) {
-      abort('Cannot enlarge memory arrays to size ' + requestedSize + ' bytes (OOM). Either (1) compile with -sINITIAL_MEMORY=X with X higher than the current value ' + HEAP8.length + ', (2) compile with -sALLOW_MEMORY_GROWTH which allows increasing the size at runtime, or (3) if you want malloc to return NULL (0) instead of this abort, compile with -sABORTING_MALLOC=0');
+  function emscripten_realloc_buffer(size) {
+      try {
+        // round size grow request up to wasm page size (fixed 64KB per spec)
+        wasmMemory.grow((size - buffer.byteLength + 65535) >>> 16); // .grow() takes a delta compared to the previous size
+        updateGlobalBufferAndViews(wasmMemory.buffer);
+        return 1 /*success*/;
+      } catch(e) {
+        err('emscripten_realloc_buffer: Attempted to grow heap from ' + buffer.byteLength  + ' bytes to ' + size + ' bytes, but got error: ' + e);
+      }
+      // implicit 0 return to save code size (caller will cast "undefined" into 0
+      // anyhow)
     }
   function _emscripten_resize_heap(requestedSize) {
       var oldSize = HEAPU8.length;
       requestedSize = requestedSize >>> 0;
-      abortOnCannotGrowMemory(requestedSize);
+      // With multithreaded builds, races can happen (another thread might increase the size
+      // in between), so return a failure, and let the caller retry.
+      assert(requestedSize > oldSize);
+  
+      // Memory resize rules:
+      // 1.  Always increase heap size to at least the requested size, rounded up
+      //     to next page multiple.
+      // 2a. If MEMORY_GROWTH_LINEAR_STEP == -1, excessively resize the heap
+      //     geometrically: increase the heap size according to
+      //     MEMORY_GROWTH_GEOMETRIC_STEP factor (default +20%), At most
+      //     overreserve by MEMORY_GROWTH_GEOMETRIC_CAP bytes (default 96MB).
+      // 2b. If MEMORY_GROWTH_LINEAR_STEP != -1, excessively resize the heap
+      //     linearly: increase the heap size by at least
+      //     MEMORY_GROWTH_LINEAR_STEP bytes.
+      // 3.  Max size for the heap is capped at 2048MB-WASM_PAGE_SIZE, or by
+      //     MAXIMUM_MEMORY, or by ASAN limit, depending on which is smallest
+      // 4.  If we were unable to allocate as much memory, it may be due to
+      //     over-eager decision to excessively reserve due to (3) above.
+      //     Hence if an allocation fails, cut down on the amount of excess
+      //     growth, in an attempt to succeed to perform a smaller allocation.
+  
+      // A limit is set for how much we can grow. We should not exceed that
+      // (the wasm binary specifies it, so if we tried, we'd fail anyhow).
+      var maxHeapSize = getHeapMax();
+      if (requestedSize > maxHeapSize) {
+        err('Cannot enlarge memory, asked to go up to ' + requestedSize + ' bytes, but the limit is ' + maxHeapSize + ' bytes!');
+        return false;
+      }
+  
+      let alignUp = (x, multiple) => x + (multiple - x % multiple) % multiple;
+  
+      // Loop through potential heap size increases. If we attempt a too eager
+      // reservation that fails, cut down on the attempted size and reserve a
+      // smaller bump instead. (max 3 times, chosen somewhat arbitrarily)
+      for (var cutDown = 1; cutDown <= 4; cutDown *= 2) {
+        var overGrownHeapSize = oldSize * (1 + 0.2 / cutDown); // ensure geometric growth
+        // but limit overreserving (default to capping at +96MB overgrowth at most)
+        overGrownHeapSize = Math.min(overGrownHeapSize, requestedSize + 100663296 );
+  
+        var newSize = Math.min(maxHeapSize, alignUp(Math.max(requestedSize, overGrownHeapSize), 65536));
+  
+        var replacement = emscripten_realloc_buffer(newSize);
+        if (replacement) {
+  
+          return true;
+        }
+      }
+      err('Failed to grow the heap from ' + oldSize + ' bytes to ' + newSize + ' bytes, not enough memory!');
+      return false;
     }
 
   var printCharBuffers = [null,[],[]];
@@ -1888,8 +1978,8 @@ var _asyncify_start_rewind = Module["_asyncify_start_rewind"] = createExportWrap
 /** @type {function(...*):?} */
 var _asyncify_stop_rewind = Module["_asyncify_stop_rewind"] = createExportWrapper("asyncify_stop_rewind");
 
-var ___start_em_js = Module['___start_em_js'] = 14784;
-var ___stop_em_js = Module['___stop_em_js'] = 15176;
+var ___start_em_js = Module['___start_em_js'] = 14656;
+var ___stop_em_js = Module['___stop_em_js'] = 15048;
 
 
 
@@ -1945,7 +2035,6 @@ var unexportedRuntimeSymbols = [
   'stringToNewUTF8',
   'exitJS',
   'getHeapMax',
-  'abortOnCannotGrowMemory',
   'emscripten_realloc_buffer',
   'ENV',
   'ERRNO_CODES',
@@ -2147,7 +2236,6 @@ var missingLibrarySymbols = [
   'zeroMemory',
   'stringToNewUTF8',
   'exitJS',
-  'emscripten_realloc_buffer',
   'setErrNo',
   'inetPton4',
   'inetNtop4',
@@ -2333,6 +2421,7 @@ function run(args) {
 
     initRuntime();
 
+    readyPromiseResolve(Module);
     if (Module['onRuntimeInitialized']) Module['onRuntimeInitialized']();
 
     assert(!Module['_main'], 'compiled without a main, but one is present. if you added it from JS, use Module["onRuntimeInitialized"]');
@@ -2398,168 +2487,14 @@ run();
 
 
 
-const [host, portStr] = location.search.slice(1).split(':');
-const port = parseInt(portStr, 10) || 443;
 
-function toFriendlyHex(binStrOrArr) {
-  let s = '';
-  if (typeof binStrOrArr === 'string') {
-    for (let i = 0, len = binStrOrArr.length; i < len; i++) {
-      let hex = binStrOrArr.charCodeAt(i).toString(16);
-      s += (hex.length < 2 ? '0' : '') + hex + ' ';
-    }
-  } else {
-    for (let i = 0, len = binStrOrArr.length; i < len; i++) {
-      let hex = binStrOrArr[i].toString(16);
-      s += (hex.length < 2 ? '0' : '') + hex + ' ';
-    }
-  }
-  return s;
+  return bearssl_emscripten.ready
 }
-
-function byteArrayFromPointer(buff, size) {
-  const arr = new Uint8Array(size);
-  for (let i = 0; i < size; i++) arr[i] = Module.getValue(buff + i, 'i8');
-  return arr;
-}
-
-Module.onRuntimeInitialized = function () {
-  const initTls = Module.cwrap('initTls', 'number', ['string', 'array', 'number']);
-  const writeData = Module.cwrap('writeData', 'number', ['array', 'number'], { async: true });
-  const readData = Module.cwrap('readData', 'number', ['number', 'number'], { async: true });
-
-  const socket = new WS2S('ws://localhost:3613/').newSocket();
-
-  const incomingDataQueue = [];
-  let globalBuf = null;
-  let globalMaxSize = 0;
-  let globalResolve = null;
-
-  function dequeueIncomingData() {
-    if (incomingDataQueue.length === 0 || globalResolve === null) return;
-
-    let nextData = incomingDataQueue[0];
-    if (nextData.length > globalMaxSize) {
-      incomingDataQueue[0] = nextData.subarray(globalMaxSize);
-      nextData = nextData.subarray(0, globalMaxSize);
-
-    } else {
-      incomingDataQueue.shift();
-    }
-
-    const len = nextData.length;
-    for (let i = 0; i < len; i++) Module.setValue(globalBuf + i, nextData[i], 'i8');
-
-    const resolve = globalResolve;
-    globalResolve = globalBuf = null;
-    globalMaxSize = 0;
-
-    resolve(len);
-  }
-
-  Module.provideEncryptedFromNetwork = (buf, maxSize) => {
-    console.info(`Module.provideEncryptedFromNetwork / providing up to ${maxSize} bytes`);
-
-    globalBuf = buf;
-    globalMaxSize = maxSize;
-    const promise = new Promise(resolve => globalResolve = resolve);
-
-    dequeueIncomingData();
-    return promise;
-  }
-
-  Module.writeEncryptedToNetwork = (buf, size) => {
-    console.info(`Module.writeEncryptedToNetwork / writing ${size} bytes`);
-
-    const arr = byteArrayFromPointer(buf, size);
-    socket.sendb(arr);
-    return size;
-  }
-
-  socket.onReady = () => {
-    socket.connect(host, port);
-  }
-
-  socket.onOpen = async () => {
-    // console.log('[socket] connected: sending pg probe value');
-    // var pgMagic = arrFromFriendlyHex('00 00 00 08 04 D2 16 2F');
-    // socket.sendb(pgMagic);
-
-    const entropyLen = 256;
-    const entropy = new Uint8Array(entropyLen);
-    crypto.getRandomValues(entropy);
-
-    let result = initTls(host, entropy, entropyLen);
-    console.log('initTls result:', result);
-
-    const getReq = `GET / HTTP/1.0\r\nHost: ${host}\r\n\r\n`;
-    const len = getReq.length;
-    const arr = new Uint8Array(len);
-    for (let i = 0; i < len; i ++) arr[i] = getReq.charCodeAt(i);
-    console.log(getReq);
-
-    result = await writeData(arr, len);
-    console.log('write result:', result);
-
-    const size = 17000;
-    const buf = Module._malloc(size);
-    let page = '';
-    for (;;) {
-      result = await readData(buf, size);
-      if (result <= 0) break;
-      let str = '';
-      for (let i = 0; i < result; i ++) str += String.fromCharCode(getValue(buf + i, 'i8'));
-      console.log('>>', str);
-      page += str;
-    }
-
-    document.body.style.margin = 0;
-    document.body.style.padding = 0;
-
-    const headersEnd = page.indexOf('\r\n\r\n');
-    
-    const headers = page.slice(0, headersEnd);
-    const pre = document.createElement('pre');
-    pre.innerText = headers;
-    pre.style.width = '100vw';
-    pre.style.height = '30vh';
-    pre.style.overflow = 'scroll'
-    document.body.appendChild(pre);
-
-    const html = page.slice(headersEnd);
-    const iframe = document.createElement('iframe');
-    iframe.srcdoc = html;
-    iframe.style.width = '100vw';
-    iframe.style.height = '65vh';
-    document.body.appendChild(iframe);
-
-    Module._free(buf);
-    console.log('finished');
-  };
-
-  // var receivedS = false;
-
-  socket.onRecv = (data) => {
-    console.info(`socket.onRecv / ${data.length} bytes received:`, toFriendlyHex(data));
-
-    incomingDataQueue.push(data);
-    dequeueIncomingData();
-
-    // var binStr = binStrFromArr(data);
-    // if (receivedS === false && binStr === 'S') {
-    //   receivedS = true;
-    //   client.handshake();
-    //   //socket.sendb(arrFromFriendlyHex('16 03 01 00 6a 01 00 00 66 03 03 7a 88 bd db 11 34 5e 2a d4 25 01 fa 9d e5 52 56 2c c8 d0 e1 23 0f cc 4b fb a5 a0 c8 a2 72 b6 2c 00 00 04 00 3d 00 3c 01 00 00 39 00 00 00 2b 00 29 00 00 26 70 61 74 69 65 6e 74 2d 74 68 75 6e 64 65 72 2d 31 38 37 34 33 35 2e 63 6c 6f 75 64 2e 6e 65 6f 6e 2e 74 65 63 68 00 0d 00 06 00 04 04 01 02 01'));
-    //   //socket.sendb(arrFromFriendlyHex('16 03 01 00 ec 01 00 00 e8 03 03 76 01 f0 fe fd 88 2e 0b 44 39 f6 2e fe d5 28 3d be 40 1d 6d 0a de e6 26 d7 31 4c ca 78 19 67 d3 00 00 38 c0 2c c0 30 00 9f cc a9 cc a8 cc aa c0 2b c0 2f 00 9e c0 24 c0 28 00 6b c0 23 c0 27 00 67 c0 0a c0 14 00 39 c0 09 c0 13 00 33 00 9d 00 9c 00 3d 00 3c 00 35 00 2f 00 ff 01 00 00 87 00 00 00 2b 00 29 00 00 26 70 61 74 69 65 6e 74 2d 74 68 75 6e 64 65 72 2d 31 38 37 34 33 35 2e 63 6c 6f 75 64 2e 6e 65 6f 6e 2e 74 65 63 68 00 0b 00 04 03 00 01 02 00 0a 00 0c 00 0a 00 1d 00 17 00 1e 00 19 00 18 00 23 00 00 00 16 00 00 00 17 00 00 00 0d 00 30 00 2e 04 03 05 03 06 03 08 07 08 08 08 09 08 0a 08 0b 08 04 08 05 08 06 04 01 05 01 06 01 03 03 02 03 03 01 02 01 03 02 02 02 04 02 05 02 06 02'));
-
-    // } else {
-    //   client.process(binStr);
-    // }
-  }
-
-  socket.onClose = () => {
-    console.info('socket.onClose / disconnected');
-    if (globalResolve) globalResolve(0);
-  }
-
-}
+);
+})();
+if (typeof exports === 'object' && typeof module === 'object')
+  module.exports = bearssl_emscripten;
+else if (typeof define === 'function' && define['amd'])
+  define([], function() { return bearssl_emscripten; });
+else if (typeof exports === 'object')
+  exports["bearssl_emscripten"] = bearssl_emscripten;
