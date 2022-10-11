@@ -104,6 +104,8 @@ export default (async function (host, port) {
             return status;
         },
         async readData(maxBytes = 16709) {  // BR_SSL_BUFSIZE_INPUT in bearssl_ssl.h
+            // TODO: if we were to set a global maxBytes, we could avoid repeated allocations, 
+            // and even build the buffer into the C file (allowing us to compile without ALLOW_MEMORY_GROWTH) 
             const buf = module._malloc(maxBytes);
             try {
                 const bytesRead = await wasm.readData(buf, maxBytes);
